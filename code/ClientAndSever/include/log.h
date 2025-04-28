@@ -3,9 +3,10 @@
  * @Author: EST 363023987@qq.com
  * @Date: 2025-04-19 19:14:06
  * @LastEditors: EST 363023987@qq.com
- * @LastEditTime: 2025-04-19 20:02:20
+ * @LastEditTime: 2025-04-27 09:46:59
  * @FilePath: \code\ClientAndSever\include\log.h
  * @Description: 
+ *      实现了客户端和服务器进行连接的整体过程
  * 
  */
 #include <iostream>
@@ -104,7 +105,5 @@ std::string GetIpArr()
         std::getline(std::cin,end);
     }
  }
-
-
  } // namespace test
  
