@@ -21,6 +21,9 @@
 - [封装一个简易的应答式异步服务器](#封装一个简易的应答式异步服务器)
   - [单个通信读写事件单元](#单个通信读写事件单元)
   - [管理所有连接的服务器类](#管理所有连接的服务器类)
+- [封装为全双工](#封装为全双工)
+- [处理粘包和字节序列](#处理粘包和字节序列)
+  - [处理粘包](#处理粘包)
 
 
 # Cmake使用
@@ -700,3 +703,136 @@ void handle_accept(session* new_session,const boost::system::error_code& ec)
 ```
 使用一个关联上下的类创建出这个服务器管理类,使用`start_accept()`将要接受连接的acceptor绑定到服务器上,内部就是将对应的socket描述符绑定到iocp模型上,当回调函数触发的时候socket已经和客户端建立好连接了
 之后在回调函数中开启socket的事件
+
+# 封装为全双工
+实际开发过程中的服务器采用的是全双工通信，服务器一直接受客户端的发来的信息同时也可以随时讲数据发送给对方：
+- 单工
+  - 数据单向单线流通
+- 半双工
+  - 数据双向单线流通
+- 全双工
+  - 数据双向双线流通
+
+将之前的半双工通信服务中的读写数据回调进行改绑，读就一直读、写就一直写
+```cpp
+void Session::handle_read(const boost::system::error_code& ec,std::size_t bytes_transfered)
+{
+    if (!ec)
+    {
+        std::cout<<"read data:"<<_read_data->get_msg()<<"\n";
+        send(_read_data->get_msg(),_read_data->get_total_length());
+        _read_data->clear();
+        _socket.async_read_some(
+            boost::asio::buffer(_read_data->get_msg(),_read_data->get_total_length())
+            ,
+            std::bind(&Session::handle_read,shared_from_this(),std::placeholders::_1,std::placeholders::_2)
+        );
+    }
+    else
+    {
+        std::cout<<"read error code : "<<ec.value();
+        _parent->clear_session(_uuid);
+    }
+}
+void Session::handle_write(const boost::system::error_code& ec)
+{
+    if (!ec)
+    {
+        if (!_data_que.empty())
+        {
+            _start_send_que_data();
+        }else
+        {
+            std::cout <<"send queue is empty \n";
+        }
+    }
+    else
+    {
+        std::cout<<"write error code : "<<ec.value();
+        _parent->clear_session(_uuid);
+    }
+    
+}
+```
+# 处理粘包和字节序列
+粘包是服务器非常常见的现象当客户端发送多个数据包给服务器的时候底层的TCP接收缓冲区将多个包粘连在一起
+![粘包图示](./image/粘包图示.png)
+客户端发送了两次`Hello Word!`给服务器但是服务器将两个包的数据粘连在一起了,出现的原因:
+TCP底层是面向字节流的只能保证发送顺序和准确性,字节流以字节为单位发送N个字节给服务器,N取决于当前客户端缓冲区是否有空间,这个空间不保证一次性发送完成N个字节可能拆分为多次发送
+## 处理粘包
+处理粘包的方式主要采用规定一个数据包的格式的方式,这个过程`切包`,常用的协议是tlv协议(消息id+消息长度+消息内容)
+![tlv消息格式](./image/tlv消息格式.png)
+处理tlv协议的方式
+```cpp
+
+if(ec)
+{
+    已经使用的数据长度
+    copy_length = 0;
+    while(接收的数据长度还有)
+    {
+        if(没有解析数据头部)
+        {
+            if(小于规定的头部字节长度)
+            {
+                将数据放到头部信息，然后继续读取
+                return;
+            }
+            将数据放到头部数据中`注意上次是否有存一部分进去`
+            if(数据长度超过了协议规定长度)
+            {
+                数据作废,错误处理
+                return;
+            }
+            
+            if(接收的数据小于数据长度)
+            {
+                将已经解析头变为true`head_parse`;
+                将数据全部放入消息体接收中
+                继续读取
+                return;
+            }
+            将接收数据中需要部分拼入数据体中
+
+            将解析头变为false`head_parse`
+            if(没有剩余接收数据)
+            {
+                继续接收新的数据;
+                return;
+            }
+            continue;
+        }
+        上次的数据不是整体的数据体这次数据是`上次的尾部+[可能还有新数据头部]`
+        if(接收的数据比剩下需要的数据少)
+        {
+            拼入接收体
+            继续接收
+            return;
+        }
+        将数据拷贝需要的部分到接收数据体中
+        将已经解析头变为true`head_parse`;
+        if(已经使用完全部数据了)
+        {
+            继续接收数据
+            return;
+        }
+        continue;
+    }
+}
+else
+{
+    error process;
+}
+```
+整体流程如下图
+![切包流程图](./image/切包流程图.png)
+## 字节序
+在计算机网络中，由于不同的计算机使用的 CPU 架构和字节顺序可能不同，因此在传输数据时需要对数据的字节序进行统一，以保证数据能够正常传输和解析。这就是网络字节序的作用。
+
+具体来说，计算机内部存储数据的方式有两种：大端序（Big-Endian）和小端序（Little-Endian）。在大端序中，高位字节存储在低地址处，而低位字节存储在高地址处；在小端序中，高位字节存储在高地址处，而低位字节存储在低地址处。
+
+在网络通信过程中，通常使用的是大端序。这是因为早期的网络硬件大多采用了 Motorola 处理器，而 Motorola 处理器使用的是大端序。此外，大多数网络协议规定了网络字节序必须为大端序。
+
+因此，在进行网络编程时，需要将主机字节序转换为网络字节序，也就是将数据从本地字节序转换为大端序。可以使用诸如 htonl、htons、ntohl 和 ntohs 等函数来实现字节序转换操作。
+
+综上所述，网络字节序的主要作用是统一不同计算机间的数据表示方式，以保证数据在网络中的正确传输和解析。

@@ -39,3 +39,4 @@ void MsgNode::append_data_offset(int length)
 {
     this->_cur_length+=length;
 }
+
